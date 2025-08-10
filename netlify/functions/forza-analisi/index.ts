@@ -143,7 +143,7 @@ async function callOpenAIForJournal(prompt: string) {
     ]
   })
   const text = completion.choices[0]?.message?.content?.trim() || ''
-  log('OpenAI raw output:', text) // <-- DEBUG: mostriamo l'output prima del parse
+  log('OpenAI raw output:', text)
   try { return JSON.parse(text) } catch { return { descrizione_autore: text } }
 }
 
@@ -215,8 +215,11 @@ export const handler: Handler = async (event) => {
     return {
       statusCode: 200, headers: CORS,
       body: JSON.stringify({
-        forced: true, updated: true, authorId,
+        forced: true,
+        updated: true,
+        authorId,
         poemsCount: poems.length,
+        diario: newJournal, // 👈 aggiunta per inviare il diario completo
         wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
         reqId
       })
