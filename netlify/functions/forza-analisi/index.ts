@@ -1,76 +1,45 @@
-// netlify/functions/aggiorna-journal/index.ts
+// netlify/functions/forza-analisi/index.ts
 import type { Handler } from '@netlify/functions'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import QRCode from 'qrcode'
 
-/**
- * ==========================
- *   ENV & CONFIG
- * ==========================
- */
+// ===== ENV & CONFIG =====
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!
-const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id' // es. 'user_id'
-const MIN_POEMS = Number(process.env.MIN_POEMS_TO_UPDATE || 3)
+const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id'
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
-/**
- * ==========================
- *   CLIENTS
- * ==========================
- */
+// ===== CLIENTS =====
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-/**
- * ==========================
- *   UTILS
- * ==========================
- */
+// ===== UTILS =====
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization'
 }
-
 const isUuid = (s?: string) =>
   typeof s === 'string' &&
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s)
-
 const errToString = (e: any) => (e && e.message) ? e.message : String(e)
 const newReqId = () => Math.random().toString(36).slice(2, 9)
-const log = (...a: any[]) => console.log('[aggiorna-journal]', ...a)
-const logErr = (...a: any[]) => console.error('[aggiorna-journal]', ...a)
-
+const log = (...a: any[]) => console.log('[forza-analisi]', ...a)
+const logErr = (...a: any[]) => console.error('[forza-analisi]', ...a)
 const pickAuthorId = (body: any): string | null =>
   body?.author_id || body?.user_id || body?.record?.user_id || null
 
 type Poem = { title: string; content: string }
 const normalizePoem = (p: any): Poem => ({
-  // alias lato TS: non selezioniamo colonne inesistenti
   title: (p?.title ?? p?.titolo ?? '') || '',
   content: (p?.content ?? '') || ''
 })
 
-/**
- * ==========================
- *   SUPABASE OPS
- * ==========================
- */
-async function countPoemsByAuthor(authorId: string) {
-  const { count, error } = await supabase
-    .from('poesie')
-    .select('id', { count: 'exact', head: true })
-    .eq(AUTHOR_COL, authorId)
-  if (error) throw new Error(`Supabase count error: ${JSON.stringify(error)}`)
-  return count || 0
-}
-
+// ===== SUPABASE OPS =====
 async function fetchAllPoems(authorId: string): Promise<Poem[]> {
-  // IMPORTANTISSIMO: non selezionare colonne inesistenti (niente "testo")
   const { data, error } = await supabase
     .from('poesie')
     .select('id,title,titolo,content,created_at')
@@ -83,7 +52,7 @@ async function fetchAllPoems(authorId: string): Promise<Poem[]> {
 async function fetchProfile(authorId: string) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, poetic_journal, poetic_profile, qr_code_url, public_page_url, last_updated')
+    .select('id, username, poetic_journal, qr_code_url, public_page_url, last_updated')
     .eq('id', authorId)
     .single()
   if (error) throw new Error(`Supabase select profile error: ${JSON.stringify(error)}`)
@@ -97,19 +66,22 @@ async function updateProfileJournal(authorId: string, journal: any, qrDataUrl?: 
   }
   if (qrDataUrl) patch.qr_code_url = qrDataUrl
 
-  const { error } = await supabase
-    .from('profiles')
-    .update(patch)
-    .eq('id', authorId)
-
+  const { error } = await supabase.from('profiles').update(patch).eq('id', authorId)
   if (error) throw new Error(`Supabase update profile error: ${JSON.stringify(error)}`)
 }
 
-/**
- * ==========================
- *   JOURNAL / OPENAI
- * ==========================
- */
+async function insertHistory(authorId: string, journal: any) {
+  const { error } = await supabase
+    .from('diario_autore_history')
+    .insert({
+      author_id: authorId,
+      contenuto: journal,
+      source: 'netlify/forza-analisi'
+    })
+  if (error) logErr('history insert error', error)
+}
+
+// ===== JOURNAL / OPENAI =====
 function buildCorpus(poems: Poem[]) {
   return poems
     .map((p, i) => {
@@ -150,44 +122,27 @@ async function callOpenAIForJournal(prompt: string) {
     ],
     temperature: 0.4
   })
-
   const text = completion.choices[0]?.message?.content?.trim() || ''
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { descrizione_autore: text }
-  }
+  try { return JSON.parse(text) } catch { return { descrizione_autore: text } }
 }
 
 async function maybeGenerateQr(authorId: string, profile: any): Promise<string | null> {
   if (!PUBLIC_BASE_URL) return null
-  if (profile?.qr_code_url) return null // non rigeneriamo se già presente
+  if (profile?.qr_code_url) return null
   const publicUrl = profile?.public_page_url || `${PUBLIC_BASE_URL}/autore/${authorId}`
-  try {
-    return await QRCode.toDataURL(publicUrl)
-  } catch {
-    return null
-  }
+  try { return await QRCode.toDataURL(publicUrl) } catch { return null }
 }
 
-/**
- * ==========================
- *   HANDLER
- * ==========================
- */
+// ===== HANDLER =====
 export const handler: Handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
+  if (event.httpMethod === 'OPTIONS')
     return { statusCode: 200, headers: CORS, body: '' }
-  }
 
   const reqId = newReqId()
-
   try {
     const body = event.body ? JSON.parse(event.body) : {}
     const debug = !!(body?.debug || event.queryStringParameters?.debug)
-    const dry_run = !!body?.dry_run
 
-    // 1) ricavo authorId
     const authorId = pickAuthorId(body)
     if (!isUuid(authorId || '')) {
       const msg = `Invalid author_id (expected UUID): ${authorId}`
@@ -195,52 +150,19 @@ export const handler: Handler = async (event) => {
       return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: msg, reqId }) }
     }
 
-    // 2) conteggio poesie
-    const poemsCount = await countPoemsByAuthor(authorId!)
-    if (debug) log('reqId=', reqId, 'authorId=', authorId, 'authorCol=', AUTHOR_COL, 'poemsCount=', poemsCount)
-
-    if (poemsCount < MIN_POEMS) {
-      const res = {
-        triggered: false,
-        reason: `not_enough_poems (have ${poemsCount}, need ${MIN_POEMS})`,
-        authorId,
-        authorCol: AUTHOR_COL,
-        minPoems: MIN_POEMS,
-        reqId
-      }
-      return { statusCode: 200, headers: CORS, body: JSON.stringify(res) }
-    }
-
-    // 3) leggo poesie + profilo (solo colonne esistenti)
+    // carico poesie + profilo
     const poems = await fetchAllPoems(authorId!)
     const corpus = buildCorpus(poems)
     const profile = await fetchProfile(authorId!)
     const prevJournal = profile?.poetic_journal || null
 
-    if (dry_run) {
-      const res = {
-        triggered: true,
-        dry_run: true,
-        authorId,
-        authorCol: AUTHOR_COL,
-        poemsCount,
-        hasPrevJournal: !!prevJournal,
-        publicBaseUrl: PUBLIC_BASE_URL || null,
-        qrColumnPresent: 'qr_code_url' in (profile || {}),
-        profilePreview: { id: profile?.id, username: profile?.username },
-        reqId
-      }
-      return { statusCode: 200, headers: CORS, body: JSON.stringify(res) }
-    }
-
-    // 4) OpenAI
-    let newJournal: any = null
+    // OpenAI
+    let newJournal: any
     try {
       const prompt = buildPrompt(prevJournal, corpus)
       newJournal = await callOpenAIForJournal(prompt)
     } catch (e) {
       logErr('OpenAI error', errToString(e))
-      // fallback robusto
       newJournal = {
         descrizione_autore: 'Profilo in aggiornamento: riprova più tardi.',
         profilo_poetico: { temi_ricorrenti: [], stile: '', evoluzione: '' },
@@ -248,28 +170,29 @@ export const handler: Handler = async (event) => {
       }
     }
 
-    // 5) QR opzionale
+    // QR
     const qrDataUrl = await maybeGenerateQr(authorId!, profile)
 
-    // 6) update profilo
+    // update + storico
     await updateProfileJournal(authorId!, newJournal, qrDataUrl)
+    await insertHistory(authorId!, newJournal)
 
     const res = {
-      triggered: true,
+      forced: true,
       updated: true,
       authorId,
-      poemsCount,
-      minPoems: MIN_POEMS,
-      wroteFields: ['poetic_journal', 'last_updated'].concat(qrDataUrl ? ['qr_code_url'] : []),
+      poemsCount: poems.length,
+      wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
       reqId
     }
     return { statusCode: 200, headers: CORS, body: JSON.stringify(res) }
+
   } catch (err: any) {
     logErr('FATAL', err)
     return {
       statusCode: 500,
       headers: CORS,
-      body: JSON.stringify({ error: errToString(err), where: 'aggiorna-journal' })
+      body: JSON.stringify({ error: errToString(err), where: 'forza-analisi' })
     }
   }
 }
