@@ -1,0 +1,22 @@
+[build.environment]
+  NODE_VERSION = "20"
+
+[build]
+  # Nessuna build frontend per il backend
+  command = "npm install"
+  publish = "public"                  # cartella statica placeholder, relativa alla base directory
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = [
+    "@supabase/supabase-js",
+    "openai",
+    "node-fetch",
+    "qrcode"
+  ]
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
