@@ -138,13 +138,29 @@ async function callOpenAIForJournal(prompt: string) {
     model: OPENAI_MODEL,
     temperature: 0.3,
     messages: [
-      { role: 'system', content: 'Sei un assistente che produce JSON valido e conciso.' },
+      { role: 'system', content: 'Sei un assistente che produce solo JSON valido, senza testo extra.' },
       { role: 'user', content: prompt }
     ]
   })
-  const text = completion.choices[0]?.message?.content?.trim() || ''
-  log('OpenAI raw output:', text)
-  try { return JSON.parse(text) } catch { return { descrizione_autore: text } }
+
+  let text = completion.choices[0]?.message?.content?.trim() || ''
+
+  // 🔹 Rimuove eventuali blocchi ```json ... ```
+  if (text.startsWith('```')) {
+    text = text.replace(/^```json\s*/i, '')
+               .replace(/^```\s*/i, '')
+               .replace(/```$/, '')
+               .trim()
+  }
+
+  log('OpenAI raw output (cleaned):', text)
+
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    logErr('JSON parse error, returning raw string', e)
+    return { descrizione_autore: text }
+  }
 }
 
 async function maybeGenerateQr(authorId: string, profile: any): Promise<string | null> {
@@ -219,7 +235,7 @@ export const handler: Handler = async (event) => {
         updated: true,
         authorId,
         poemsCount: poems.length,
-        diario: newJournal, // 👈 aggiunta per inviare il diario completo
+        diario: newJournal,
         wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
         reqId
       })
