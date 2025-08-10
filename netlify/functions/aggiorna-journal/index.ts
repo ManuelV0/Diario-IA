@@ -1,20 +1,17 @@
 import type { Handler } from '@netlify/functions'
 import { createClient } from '@supabase/supabase-js'
-import OpenAI from 'openai'
 import QRCode from 'qrcode'
 
 // ============ ENV ============
 const FORZA_ANALISI_URL = process.env.FORZA_ANALISI_URL!
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY!
 const AUTHOR_COL_ENV = process.env.POEMS_AUTHOR_COLUMN || 'user_id'
 const MIN_POEMS = Number(process.env.MIN_POEMS_TO_UPDATE || 3)
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
 
 // ============ CLIENTS ============
 const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!)
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY! })
 
 // ============ CORS ============
 const CORS = {
@@ -44,29 +41,6 @@ function normalizePoemRecord(p: any) {
   const title = p.titolo ?? p.title ?? null
   const text  = p.content ?? null
   return { title: title ?? null, text: text ?? null }
-}
-function promptDiario(prev: any | null, corpus: string) {
-  const prevBlock = prev ? `Stato precedente del diario (JSON):
-${JSON.stringify(prev).slice(0, 8000)}
-` : ''
-  return `${prevBlock}Aggiorna o crea il DIARIO DELL’AUTORE sulla base dell’insieme di poesie fornite.
-Rispondi SOLO con JSON valido e questo schema esatto:
-{
-  "descrizione_autore": string,
-  "profilo_poetico": {
-    "voce": string,
-    "stile": string,
-    "tono": string,
-    "temi_ricorrenti": string[],
-    "immagini_metafore_tipiche": string[],
-    "influenze_letterarie": string[]
-  },
-  "ultimo_aggiornamento_iso": string
-}
-Le frasi devono essere concise e chiare. Imposta "ultimo_aggiornamento_iso" con una ISO timestamp (UTC).
-
-CORPUS POESIE:
-"""${corpus.slice(0, 20000)}"""` // limito per sicurezza
 }
 
 export const handler: Handler = async (event, context) => {
@@ -143,17 +117,15 @@ export const handler: Handler = async (event, context) => {
     if (!poems?.length) return { statusCode: 404, headers: CORS, body: JSON.stringify({ error: 'Nessuna poesia', authorId }) }
 
     // -------- 3) Precedente diario + QR
-    let previous: any = null
     let existingQr: string | null = null
     let hasQrColumn = true
     try {
       const { data: prof, error: profErr } = await supabase
         .from('profiles')
-        .select('poetic_journal, qr_code_url')
+        .select('qr_code_url')
         .eq('id', authorId)
         .single()
       if (!profErr && prof) {
-        previous = safeJson(prof.poetic_journal) ?? prof.poetic_journal ?? null
         existingQr = prof.qr_code_url ?? null
       } else if (profErr?.message?.includes('qr_code_url')) {
         hasQrColumn = false
@@ -174,17 +146,21 @@ export const handler: Handler = async (event, context) => {
       }
     }
 
-    // -------- 5) OpenAI
+    // -------- 5) Chiamata a FORZA ANALISI
     let diarioAggiornato: any = null
     try {
-      const gpt = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [{ role: 'user', content: promptDiario(previous, corpus) }],
-        response_format: { type: 'json_object' }
+      const faResp = await fetch(`${FORZA_ANALISI_URL}/analizza`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author_id: authorId })
       })
-      diarioAggiornato = safeJson<any>(gpt.choices?.[0]?.message?.content)
-    } catch {}
+      if (!faResp.ok) throw new Error(`forza-analisi error ${faResp.status}`)
+      const faJson = await faResp.json()
+      diarioAggiornato = faJson?.diario || null
+    } catch (e) {
+      logErr('Errore chiamata forza-analisi', e)
+    }
+
     if (!diarioAggiornato) {
       diarioAggiornato = {
         descrizione_autore: 'Profilo in aggiornamento.',
