@@ -4,31 +4,46 @@ import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 import QRCode from 'qrcode'
 
-// ===== ENV & CONFIG =====
+/**
+ * ==========================
+ *   ENV & CONFIG
+ * ==========================
+ */
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!
-const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id'
+const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id' // es.: 'user_id'
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
-// ===== CLIENTS =====
+/**
+ * ==========================
+ *   CLIENTS
+ * ==========================
+ */
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-// ===== UTILS =====
+/**
+ * ==========================
+ *   CORS & UTILS
+ * ==========================
+ */
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization'
 }
+
 const isUuid = (s?: string) =>
   typeof s === 'string' &&
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s)
+
 const errToString = (e: any) => (e && e.message) ? e.message : String(e)
 const newReqId = () => Math.random().toString(36).slice(2, 9)
-const log = (...a: any[]) => console.log('[forza-analisi]', ...a)
+const log    = (...a: any[]) => console.log('[forza-analisi]', ...a)
 const logErr = (...a: any[]) => console.error('[forza-analisi]', ...a)
+
 const pickAuthorId = (body: any): string | null =>
   body?.author_id || body?.user_id || body?.record?.user_id || null
 
@@ -38,8 +53,13 @@ const normalizePoem = (p: any): Poem => ({
   content: (p?.content ?? '') || ''
 })
 
-// ===== SUPABASE OPS =====
+/**
+ * ==========================
+ *   SUPABASE OPS
+ * ==========================
+ */
 async function fetchAllPoems(authorId: string): Promise<Poem[]> {
+  // Selezioniamo solo colonne esistenti
   const { data, error } = await supabase
     .from('poesie')
     .select('id,title,titolo,content,created_at')
@@ -52,7 +72,7 @@ async function fetchAllPoems(authorId: string): Promise<Poem[]> {
 async function fetchProfile(authorId: string) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, poetic_journal, qr_code_url, public_page_url, last_updated')
+    .select('id,username,poetic_journal,qr_code_url,public_page_url,last_updated')
     .eq('id', authorId)
     .single()
   if (error) throw new Error(`Supabase select profile error: ${JSON.stringify(error)}`)
@@ -66,22 +86,31 @@ async function updateProfileJournal(authorId: string, journal: any, qrDataUrl?: 
   }
   if (qrDataUrl) patch.qr_code_url = qrDataUrl
 
-  const { error } = await supabase.from('profiles').update(patch).eq('id', authorId)
+  const { error } = await supabase
+    .from('profiles')
+    .update(patch)
+    .eq('id', authorId)
+
   if (error) throw new Error(`Supabase update profile error: ${JSON.stringify(error)}`)
 }
 
-async function insertHistory(authorId: string, journal: any) {
+async function insertHistory(authorId: string, journal: any, poemsCount: number) {
   const { error } = await supabase
     .from('diario_autore_history')
     .insert({
       author_id: authorId,
       contenuto: journal,
+      poems_count: poemsCount,
       source: 'netlify/forza-analisi'
     })
   if (error) logErr('history insert error', error)
 }
 
-// ===== JOURNAL / OPENAI =====
+/**
+ * ==========================
+ *   JOURNAL / OPENAI
+ * ==========================
+ */
 function buildCorpus(poems: Poem[]) {
   return poems
     .map((p, i) => {
@@ -116,11 +145,11 @@ function buildPrompt(prev: any | null, corpus: string) {
 async function callOpenAIForJournal(prompt: string) {
   const completion = await openai.chat.completions.create({
     model: OPENAI_MODEL,
+    temperature: 0.3,
     messages: [
-      { role: 'system', content: 'Sei un assistente che produce JSON valido.' },
+      { role: 'system', content: 'Sei un assistente che produce JSON valido e conciso.' },
       { role: 'user', content: prompt }
-    ],
-    temperature: 0.4
+    ]
   })
   const text = completion.choices[0]?.message?.content?.trim() || ''
   try { return JSON.parse(text) } catch { return { descrizione_autore: text } }
@@ -128,21 +157,33 @@ async function callOpenAIForJournal(prompt: string) {
 
 async function maybeGenerateQr(authorId: string, profile: any): Promise<string | null> {
   if (!PUBLIC_BASE_URL) return null
-  if (profile?.qr_code_url) return null
+  if (profile?.qr_code_url) return null // non rigeneriamo se già presente
   const publicUrl = profile?.public_page_url || `${PUBLIC_BASE_URL}/autore/${authorId}`
-  try { return await QRCode.toDataURL(publicUrl) } catch { return null }
+  try {
+    return await QRCode.toDataURL(publicUrl)
+  } catch {
+    return null
+  }
 }
 
-// ===== HANDLER =====
+/**
+ * ==========================
+ *   HANDLER
+ * ==========================
+ */
 export const handler: Handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS')
+  if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: CORS, body: '' }
+  }
 
   const reqId = newReqId()
+
   try {
     const body = event.body ? JSON.parse(event.body) : {}
-    const debug = !!(body?.debug || event.queryStringParameters?.debug)
+    const debug  = !!(body?.debug  || event.queryStringParameters?.debug)
+    const dryRun = !!(body?.dry_run)
 
+    // 1) authorId
     const authorId = pickAuthorId(body)
     if (!isUuid(authorId || '')) {
       const msg = `Invalid author_id (expected UUID): ${authorId}`
@@ -150,13 +191,31 @@ export const handler: Handler = async (event) => {
       return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: msg, reqId }) }
     }
 
-    // carico poesie + profilo
-    const poems = await fetchAllPoems(authorId!)
-    const corpus = buildCorpus(poems)
+    // 2) poesie & profilo
+    const poems   = await fetchAllPoems(authorId!)
+    const corpus  = buildCorpus(poems)
     const profile = await fetchProfile(authorId!)
     const prevJournal = profile?.poetic_journal || null
 
-    // OpenAI
+    if (debug) log('poemsCount=', poems.length)
+
+    // Dry-run? fermiamo qui e riportiamo diagnostica
+    if (dryRun) {
+      return {
+        statusCode: 200,
+        headers: CORS,
+        body: JSON.stringify({
+          ok: true,
+          dryRun: true,
+          authorId,
+          poemsCount: poems.length,
+          hasPrevJournal: !!prevJournal,
+          hasQrAlready: !!profile?.qr_code_url
+        })
+      }
+    }
+
+    // 3) OpenAI → nuovo diario
     let newJournal: any
     try {
       const prompt = buildPrompt(prevJournal, corpus)
@@ -169,23 +228,33 @@ export const handler: Handler = async (event) => {
         ultime_opere_rilevanti: []
       }
     }
+    // Forziamo timestamp coerente
+    try {
+      newJournal.ultimo_aggiornamento_iso = new Date().toISOString()
+    } catch {}
 
-    // QR
+    // 4) QR opzionale
     const qrDataUrl = await maybeGenerateQr(authorId!, profile)
 
-    // update + storico
+    // 5) update profilo
     await updateProfileJournal(authorId!, newJournal, qrDataUrl)
-    await insertHistory(authorId!, newJournal)
 
-    const res = {
-      forced: true,
-      updated: true,
-      authorId,
-      poemsCount: poems.length,
-      wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
-      reqId
+    // 6) storico
+    await insertHistory(authorId!, newJournal, poems.length)
+
+    // 7) risposta
+    return {
+      statusCode: 200,
+      headers: CORS,
+      body: JSON.stringify({
+        forced: true,
+        updated: true,
+        authorId,
+        poemsCount: poems.length,
+        wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
+        reqId
+      })
     }
-    return { statusCode: 200, headers: CORS, body: JSON.stringify(res) }
 
   } catch (err: any) {
     logErr('FATAL', err)
