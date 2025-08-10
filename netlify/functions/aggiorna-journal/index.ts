@@ -41,7 +41,7 @@ async function maybeGenerateQrDataUrl(url: string): Promise<string | null> {
 }
 function normalizePoemRecord(p: any) {
   const title = p.titolo ?? p.title ?? null
-  const text  = p.testo  ?? p.text  ?? p.content ?? null
+  const text  = p.content ?? null
   return { title: title ?? null, text: text ?? null }
 }
 function promptDiario(prev: any | null, corpus: string) {
@@ -109,7 +109,7 @@ export const handler: Handler = async (event, context) => {
       return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'author_id mancante', reqId }) }
     }
 
-    // -------- 1) Count poesie (no HEAD) con fallback colonne
+    // -------- 1) Count poesie
     async function tryCount(col: string) {
       const { data: rows, count, error } = await supabase
         .from('poesie')
@@ -135,7 +135,7 @@ export const handler: Handler = async (event, context) => {
     // -------- 2) Carica poesie
     const { data: poems, error: poemsErr } = await supabase
       .from('poesie')
-      .select('id, titolo, title, testo, text, content')
+      .select('id, titolo, title, content')
       .eq(activeCol as any, authorId)
       .order('id', { ascending: true })
     if (poemsErr) throw poemsErr
@@ -203,7 +203,7 @@ export const handler: Handler = async (event, context) => {
       if (qr) qrToSave = qr
     }
 
-    // -------- 7) UPDATE stato corrente in profiles (poetic_journal + last_updated)
+    // -------- 7) UPDATE stato corrente in profiles
     const updatePayload: any = {
       poetic_journal: diarioAggiornato,
       last_updated: new Date().toISOString()
@@ -216,7 +216,7 @@ export const handler: Handler = async (event, context) => {
       .eq('id', authorId)
     if (updErr) throw updErr
 
-    // -------- 8) INSERT storico in diario_autore_history
+    // -------- 8) INSERT storico
     const { error: histErr } = await supabase
       .from('diario_autore_history')
       .insert({
@@ -225,7 +225,6 @@ export const handler: Handler = async (event, context) => {
         source: 'netlify/aggiorna-journal'
       })
     if (histErr) {
-      // soft-fail: non bloccare la risposta OK, ma logga
       console.error('[aggiorna-journal] history insert error', histErr)
     }
 
