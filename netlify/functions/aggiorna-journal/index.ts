@@ -52,10 +52,10 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    // 1) Recupero poesie
+    // 1) Recupero poesie (solo colonne esistenti)
     const { data: poems, error: poemsError } = await supabase
       .from('poesie')
-      .select('id, title, titolo, content, testo, created_at')
+      .select('id, title, titolo, content, created_at')
       .eq(POEMS_AUTHOR_COLUMN, authorId)
       .order('created_at', { ascending: true });
 
