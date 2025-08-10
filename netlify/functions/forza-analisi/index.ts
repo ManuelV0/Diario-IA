@@ -12,7 +12,7 @@ import QRCode from 'qrcode'
 const SUPABASE_URL = process.env.SUPABASE_URL!
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!
-const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id' // es.: 'user_id'
+const AUTHOR_COL = process.env.POEMS_AUTHOR_COLUMN || 'user_id'
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '')
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 
@@ -34,16 +34,13 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization'
 }
-
 const isUuid = (s?: string) =>
   typeof s === 'string' &&
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s)
-
 const errToString = (e: any) => (e && e.message) ? e.message : String(e)
 const newReqId = () => Math.random().toString(36).slice(2, 9)
-const log    = (...a: any[]) => console.log('[forza-analisi]', ...a)
+const log = (...a: any[]) => console.log('[forza-analisi]', ...a)
 const logErr = (...a: any[]) => console.error('[forza-analisi]', ...a)
-
 const pickAuthorId = (body: any): string | null =>
   body?.author_id || body?.user_id || body?.record?.user_id || null
 
@@ -59,7 +56,6 @@ const normalizePoem = (p: any): Poem => ({
  * ==========================
  */
 async function fetchAllPoems(authorId: string): Promise<Poem[]> {
-  // Selezioniamo solo colonne esistenti
   const { data, error } = await supabase
     .from('poesie')
     .select('id,title,titolo,content,created_at')
@@ -85,12 +81,7 @@ async function updateProfileJournal(authorId: string, journal: any, qrDataUrl?: 
     last_updated: new Date().toISOString()
   }
   if (qrDataUrl) patch.qr_code_url = qrDataUrl
-
-  const { error } = await supabase
-    .from('profiles')
-    .update(patch)
-    .eq('id', authorId)
-
+  const { error } = await supabase.from('profiles').update(patch).eq('id', authorId)
   if (error) throw new Error(`Supabase update profile error: ${JSON.stringify(error)}`)
 }
 
@@ -152,18 +143,15 @@ async function callOpenAIForJournal(prompt: string) {
     ]
   })
   const text = completion.choices[0]?.message?.content?.trim() || ''
+  log('OpenAI raw output:', text) // <-- DEBUG: mostriamo l'output prima del parse
   try { return JSON.parse(text) } catch { return { descrizione_autore: text } }
 }
 
 async function maybeGenerateQr(authorId: string, profile: any): Promise<string | null> {
   if (!PUBLIC_BASE_URL) return null
-  if (profile?.qr_code_url) return null // non rigeneriamo se già presente
+  if (profile?.qr_code_url) return null
   const publicUrl = profile?.public_page_url || `${PUBLIC_BASE_URL}/autore/${authorId}`
-  try {
-    return await QRCode.toDataURL(publicUrl)
-  } catch {
-    return null
-  }
+  try { return await QRCode.toDataURL(publicUrl) } catch { return null }
 }
 
 /**
@@ -172,18 +160,15 @@ async function maybeGenerateQr(authorId: string, profile: any): Promise<string |
  * ==========================
  */
 export const handler: Handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
+  if (event.httpMethod === 'OPTIONS')
     return { statusCode: 200, headers: CORS, body: '' }
-  }
 
   const reqId = newReqId()
-
   try {
     const body = event.body ? JSON.parse(event.body) : {}
-    const debug  = !!(body?.debug  || event.queryStringParameters?.debug)
+    const debug = !!(body?.debug || event.queryStringParameters?.debug)
     const dryRun = !!(body?.dry_run)
 
-    // 1) authorId
     const authorId = pickAuthorId(body)
     if (!isUuid(authorId || '')) {
       const msg = `Invalid author_id (expected UUID): ${authorId}`
@@ -191,23 +176,17 @@ export const handler: Handler = async (event) => {
       return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: msg, reqId }) }
     }
 
-    // 2) poesie & profilo
-    const poems   = await fetchAllPoems(authorId!)
-    const corpus  = buildCorpus(poems)
+    const poems = await fetchAllPoems(authorId!)
+    const corpus = buildCorpus(poems)
     const profile = await fetchProfile(authorId!)
     const prevJournal = profile?.poetic_journal || null
-
     if (debug) log('poemsCount=', poems.length)
 
-    // Dry-run? fermiamo qui e riportiamo diagnostica
     if (dryRun) {
       return {
-        statusCode: 200,
-        headers: CORS,
+        statusCode: 200, headers: CORS,
         body: JSON.stringify({
-          ok: true,
-          dryRun: true,
-          authorId,
+          ok: true, dryRun: true, authorId,
           poemsCount: poems.length,
           hasPrevJournal: !!prevJournal,
           hasQrAlready: !!profile?.qr_code_url
@@ -215,7 +194,6 @@ export const handler: Handler = async (event) => {
       }
     }
 
-    // 3) OpenAI → nuovo diario
     let newJournal: any
     try {
       const prompt = buildPrompt(prevJournal, corpus)
@@ -228,41 +206,24 @@ export const handler: Handler = async (event) => {
         ultime_opere_rilevanti: []
       }
     }
-    // Forziamo timestamp coerente
-    try {
-      newJournal.ultimo_aggiornamento_iso = new Date().toISOString()
-    } catch {}
+    try { newJournal.ultimo_aggiornamento_iso = new Date().toISOString() } catch {}
 
-    // 4) QR opzionale
     const qrDataUrl = await maybeGenerateQr(authorId!, profile)
-
-    // 5) update profilo
     await updateProfileJournal(authorId!, newJournal, qrDataUrl)
-
-    // 6) storico
     await insertHistory(authorId!, newJournal, poems.length)
 
-    // 7) risposta
     return {
-      statusCode: 200,
-      headers: CORS,
+      statusCode: 200, headers: CORS,
       body: JSON.stringify({
-        forced: true,
-        updated: true,
-        authorId,
+        forced: true, updated: true, authorId,
         poemsCount: poems.length,
         wroteFields: ['poetic_journal', 'last_updated', 'history'].concat(qrDataUrl ? ['qr_code_url'] : []),
         reqId
       })
     }
-
   } catch (err: any) {
     logErr('FATAL', err)
-    return {
-      statusCode: 500,
-      headers: CORS,
-      body: JSON.stringify({ error: errToString(err), where: 'forza-analisi' })
-    }
+    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: errToString(err), where: 'forza-analisi' }) }
   }
 }
 
