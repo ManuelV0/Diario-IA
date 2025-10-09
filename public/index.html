@@ -18,5 +18,48 @@
       <li><code>/.netlify/functions/aggiorna-journal</code></li>
       <li><code>/.netlify/functions/rebuild-journal</code></li>
     </ul>
+
+
+
+<hr>
+<h2>Test forza-analisi</h2>
+<p>Invia un POST con <code>{"id":..., "content":"..."}</code> e vedi la risposta.</p>
+
+<form id="fa-form" onsubmit="return false" style="display:grid; gap:8px; max-width:640px">
+  <label>Poesia ID <input id="fa-id" type="text" placeholder="es. 123" required></label>
+  <label>Content<br>
+    <textarea id="fa-content" rows="6" placeholder="Testo della poesia..." required></textarea>
+  </label>
+  <label>Job Secret (opzionale) <input id="fa-secret" type="password" placeholder="se impostato in env"></label>
+  <button id="fa-send" type="button">Invia POST</button>
+</form>
+
+<pre id="fa-out" style="background:#0b1020; color:#d1e7ff; padding:12px; border-radius:8px; overflow:auto; max-width:640px"></pre>
+
+<script>
+  const out = document.getElementById('fa-out');
+  document.getElementById('fa-send').addEventListener('click', async () => {
+    out.textContent = '...';
+    const id = document.getElementById('fa-id').value.trim();
+    const content = document.getElementById('fa-content').value.trim();
+    const secret = document.getElementById('fa-secret').value.trim();
+    try {
+      const res = await fetch('/.netlify/functions/forza-analisi', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(secret ? { 'X-Job-Secret': secret } : {})
+        },
+        body: JSON.stringify({ id, content })
+      });
+      const text = await res.text();
+      out.textContent = `HTTP ${res.status}\n` + text;
+    } catch (e) {
+      out.textContent = 'Errore: ' + (e?.message || e);
+    }
+  });
+</script>
+
+    
   </body>
 </html>
