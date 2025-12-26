@@ -9,6 +9,3 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-
-  [[redirects]]
-/* /index.html 200
