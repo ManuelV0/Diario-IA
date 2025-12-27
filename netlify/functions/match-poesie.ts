@@ -4,17 +4,21 @@ import type { Handler } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
 
 /* ============================
-   SUPABASE
+   SUPABASE CONFIG
    ============================ */
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error('Missing Supabase environment variables');
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
 /* ============================
-   CORS HEADERS (OBBLIGATORI)
+   CORS HEADERS (GLOBAL)
    ============================ */
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -27,8 +31,9 @@ const corsHeaders = {
    HANDLER
    ============================ */
 export const handler: Handler = async (event) => {
-
-  /* ===== PRE-FLIGHT ===== */
+  /* ============================
+     PREFLIGHT (OBBLIGATORIO)
+     ============================ */
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,
@@ -37,7 +42,9 @@ export const handler: Handler = async (event) => {
     };
   }
 
-  /* ===== SOLO POST ===== */
+  /* ============================
+     SOLO POST
+     ============================ */
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -47,7 +54,20 @@ export const handler: Handler = async (event) => {
   }
 
   try {
-    const body = event.body ? JSON.parse(event.body) : {};
+    /* ============================
+       PARSE BODY
+       ============================ */
+    let body: any = {};
+    try {
+      body = event.body ? JSON.parse(event.body) : {};
+    } catch {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'Body JSON non valido' })
+      };
+    }
+
     const { poesia_id } = body;
 
     if (!poesia_id) {
@@ -58,53 +78,78 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    /* 1️⃣ EMBEDDING */
-    const { data: poesia } = await supabase
+    /* ============================
+       1️⃣ RECUPERO EMBEDDING
+       ============================ */
+    const { data: poesia, error: poesiaErr } = await supabase
       .from('poesie')
       .select('poetic_embedding_vec')
       .eq('id', poesia_id)
       .single();
 
-    if (!poesia?.poetic_embedding_vec) {
+    const embedding = poesia?.poetic_embedding_vec;
+
+    /**
+     * 🔒 PROTEZIONE CRITICA
+     * - Se embedding mancante / nullo / vuoto
+     * - NON chiamiamo l'RPC
+     * - Ritorniamo matches vuoto (UX corretto)
+     */
+    if (
+      poesiaErr ||
+      !embedding ||
+      !Array.isArray(embedding) ||
+      embedding.length === 0
+    ) {
       return {
-        statusCode: 404,
+        statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Embedding non trovato' })
+        body: JSON.stringify({ matches: [] })
       };
     }
 
-    /* 2️⃣ MATCH */
-    const { data: matches, error } = await supabase.rpc(
+    /* ============================
+       2️⃣ MATCH VIA RPC (pgvector)
+       ============================ */
+    const { data: matches, error: matchErr } = await supabase.rpc(
       'match_poesie',
       {
         poesia_id,
-        query_embedding: poesia.poetic_embedding_vec,
+        query_embedding: embedding,
         match_count: 5
       }
     );
 
-    if (error) {
-      console.error('[RPC ERROR]', error);
+    if (matchErr) {
+      console.error('[RPC match_poesie ERROR]', matchErr);
+
+      // ⚠️ Anche qui: niente 500 verso il frontend
       return {
-        statusCode: 500,
+        statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({ error: 'Errore RPC' })
+        body: JSON.stringify({ matches: [] })
       };
     }
 
-    /* 3️⃣ OK */
+    /* ============================
+       3️⃣ RESPONSE OK
+       ============================ */
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({ matches: matches || [] })
+      body: JSON.stringify({
+        matches: Array.isArray(matches) ? matches : []
+      })
     };
 
   } catch (err: any) {
-    console.error('[MATCH ERROR]', err);
+    console.error('[MATCH POESIE UNEXPECTED ERROR]', err);
+
+    // ❗ MAI far crashare il widget
     return {
-      statusCode: 500,
+      statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({ error: 'Errore interno' })
+      body: JSON.stringify({ matches: [] })
     };
   }
 };
