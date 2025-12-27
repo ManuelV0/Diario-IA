@@ -1,8 +1,10 @@
-
 // netlify/functions/match-poesie.ts
 import type { Handler } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
 
+/* ============================
+   SUPABASE
+   ============================ */
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -14,25 +16,53 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
-export const handler: Handler = async (event) => {
-  try {
-    // 🔒 Solo POST
-    if (event.httpMethod !== 'POST') {
-      return {
-        statusCode: 405,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Method Not Allowed' })
-      };
-    }
+/* ============================
+   CORS HEADERS (RIUSABILI)
+   ============================ */
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Content-Type': 'application/json'
+};
 
-    // 📥 Parse body
+/* ============================
+   HANDLER
+   ============================ */
+export const handler: Handler = async (event) => {
+  /* ============================
+     PRE-FLIGHT (OBBLIGATORIO)
+     ============================ */
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: ''
+    };
+  }
+
+  /* ============================
+     SOLO POST
+     ============================ */
+  if (event.httpMethod !== 'POST') {
+    return {
+      statusCode: 405,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'Method Not Allowed' })
+    };
+  }
+
+  try {
+    /* ============================
+       PARSE BODY
+       ============================ */
     let body: any = {};
     try {
       body = event.body ? JSON.parse(event.body) : {};
     } catch {
       return {
         statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: corsHeaders,
         body: JSON.stringify({ error: 'Body JSON non valido' })
       };
     }
@@ -42,12 +72,14 @@ export const handler: Handler = async (event) => {
     if (!poesia_id) {
       return {
         statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
+        headers: corsHeaders,
         body: JSON.stringify({ error: 'poesia_id mancante' })
       };
     }
 
-    // 1️⃣ Recupero embedding della poesia richiesta
+    /* ============================
+       1️⃣ RECUPERO EMBEDDING
+       ============================ */
     const { data: poesia, error: poesiaErr } = await supabase
       .from('poesie')
       .select('poetic_embedding_vec')
@@ -57,42 +89,53 @@ export const handler: Handler = async (event) => {
     if (poesiaErr || !poesia?.poetic_embedding_vec) {
       return {
         statusCode: 404,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Embedding non trovato per la poesia richiesta' })
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: 'Embedding non trovato per la poesia richiesta'
+        })
       };
     }
 
-    // 2️⃣ Match tramite RPC SQL (pgvector)
+    /* ============================
+       2️⃣ MATCH VIA RPC (pgvector)
+       ============================ */
     const { data: matches, error: matchErr } = await supabase.rpc(
       'match_poesie',
       {
-        poesia_id, // ✅ QUESTO ERA IL PUNTO CHIAVE
+        poesia_id,               // ✅ corretto
         query_embedding: poesia.poetic_embedding_vec,
         match_count: 5
       }
     );
 
     if (matchErr) {
-      console.error('RPC match_poesie error:', matchErr);
+      console.error('[RPC match_poesie ERROR]', matchErr);
       return {
         statusCode: 500,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Errore nel calcolo delle poesie consigliate' })
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: 'Errore nel calcolo delle poesie consigliate'
+        })
       };
     }
 
-    // 3️⃣ Risposta finale
+    /* ============================
+       3️⃣ RESPONSE OK
+       ============================ */
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ matches: matches || [] })
+      headers: corsHeaders,
+      body: JSON.stringify({
+        matches: matches || []
+      })
     };
 
   } catch (err: any) {
-    console.error('Unexpected match-poesie error:', err);
+    console.error('[MATCH POESIE UNEXPECTED ERROR]', err);
+
     return {
       statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: corsHeaders,
       body: JSON.stringify({
         error: err?.message || 'Errore interno del server'
       })
