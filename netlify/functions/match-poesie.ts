@@ -1,4 +1,3 @@
-
 // netlify/functions/match-poesie.ts
 import type { Handler } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
@@ -91,9 +90,9 @@ export const handler: Handler = async (event) => {
 
     /**
      * 🔒 PROTEZIONE CRITICA
-     * - Se embedding mancante / nullo / vuoto
-     * - NON chiamiamo l'RPC
-     * - Ritorniamo matches vuoto (UX corretto)
+     * - embedding mancante / nullo / vuoto
+     * - niente RPC
+     * - UX stabile → matches vuoto
      */
     if (
       poesiaErr ||
@@ -123,7 +122,7 @@ export const handler: Handler = async (event) => {
     if (matchErr) {
       console.error('[RPC match_poesie ERROR]', matchErr);
 
-      // ⚠️ Anche qui: niente 500 verso il frontend
+      // ❗ MAI 500 al frontend
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -145,7 +144,7 @@ export const handler: Handler = async (event) => {
   } catch (err: any) {
     console.error('[MATCH POESIE UNEXPECTED ERROR]', err);
 
-    // ❗ MAI far crashare il widget
+    // ❗ FAIL-SAFE ASSOLUTO
     return {
       statusCode: 200,
       headers: corsHeaders,
