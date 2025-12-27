@@ -1,20 +1,5 @@
-// netlify/functions/match-poesie.ts
 import type { Handler } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
-
-/* ============================
-   SUPABASE
-   ============================ */
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error('Missing Supabase environment variables');
-}
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false }
-});
 
 /* ============================
    CORS HEADERS (RIUSABILI)
@@ -53,6 +38,28 @@ export const handler: Handler = async (event) => {
   }
 
   try {
+    /* ============================
+       ENV (DENTRO HANDLER!)
+       ============================ */
+    const SUPABASE_URL = process.env.SUPABASE_URL;
+    const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return {
+        statusCode: 500,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: 'Supabase environment variables mancanti'
+        })
+      };
+    }
+
+    const supabase = createClient(
+      SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY,
+      { auth: { persistSession: false } }
+    );
+
     /* ============================
        PARSE BODY
        ============================ */
@@ -97,12 +104,12 @@ export const handler: Handler = async (event) => {
     }
 
     /* ============================
-       2️⃣ MATCH VIA RPC (pgvector)
+       2️⃣ MATCH VIA RPC
        ============================ */
     const { data: matches, error: matchErr } = await supabase.rpc(
       'match_poesie',
       {
-        poesia_id,               // ✅ corretto
+        poesia_id,
         query_embedding: poesia.poetic_embedding_vec,
         match_count: 5
       }
