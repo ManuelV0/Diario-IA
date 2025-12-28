@@ -2,23 +2,13 @@
 import type { Handler } from '@netlify/functions';
 import { createClient } from '@supabase/supabase-js';
 
-/* ============================
-   SUPABASE CONFIG
-   ============================ */
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error('Missing Supabase environment variables');
-}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
-/* ============================
-   CORS HEADERS (GLOBAL)
-   ============================ */
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -26,24 +16,12 @@ const corsHeaders = {
   'Content-Type': 'application/json'
 };
 
-/* ============================
-   HANDLER
-   ============================ */
 export const handler: Handler = async (event) => {
-  /* ============================
-     PREFLIGHT (OBBLIGATORIO)
-     ============================ */
+  /* PRE-FLIGHT */
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: ''
-    };
+    return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
-  /* ============================
-     SOLO POST
-     ============================ */
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
@@ -53,20 +31,7 @@ export const handler: Handler = async (event) => {
   }
 
   try {
-    /* ============================
-       PARSE BODY
-       ============================ */
-    let body: any = {};
-    try {
-      body = event.body ? JSON.parse(event.body) : {};
-    } catch {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ error: 'Body JSON non valido' })
-      };
-    }
-
+    const body = event.body ? JSON.parse(event.body) : {};
     const { poesia_id } = body;
 
     if (!poesia_id) {
@@ -77,76 +42,65 @@ export const handler: Handler = async (event) => {
       };
     }
 
-    /* ============================
-       1️⃣ RECUPERO EMBEDDING
-       ============================ */
-    const { data: poesia, error: poesiaErr } = await supabase
+    /* 1️⃣ Recupero poesia */
+    const { data: poesia, error } = await supabase
       .from('poesie')
-      .select('poetic_embedding_vec')
+      .select('id, poetic_embedding_vec')
       .eq('id', poesia_id)
       .single();
 
-    const embedding = poesia?.poetic_embedding_vec;
-
-    /**
-     * 🔒 PROTEZIONE CRITICA
-     * - embedding mancante / nullo / vuoto
-     * - niente RPC
-     * - UX stabile → matches vuoto
-     */
-    if (
-      poesiaErr ||
-      !embedding ||
-      !Array.isArray(embedding) ||
-      embedding.length === 0
-    ) {
+    if (error || !poesia) {
       return {
-        statusCode: 200,
+        statusCode: 404,
         headers: corsHeaders,
         body: JSON.stringify({ matches: [] })
       };
     }
 
-    /* ============================
-       2️⃣ MATCH VIA RPC (pgvector)
-       ============================ */
-    const { data: matches, error: matchErr } = await supabase.rpc(
-      'match_poesie',
-      {
-        poesia_id,
-        query_embedding: embedding,
-        match_count: 5
+    /* ===========================
+       CASO A — MATCH SEMANTICO
+       =========================== */
+    if (poesia.poetic_embedding_vec) {
+      const { data: matches, error: rpcError } = await supabase.rpc(
+        'match_poesie',
+        {
+          poesia_id,
+          query_embedding: poesia.poetic_embedding_vec,
+          match_count: 5
+        }
+      );
+
+      if (!rpcError && Array.isArray(matches) && matches.length > 0) {
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ matches })
+        };
       }
-    );
-
-    if (matchErr) {
-      console.error('[RPC match_poesie ERROR]', matchErr);
-
-      // ❗ MAI 500 al frontend
-      return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({ matches: [] })
-      };
     }
 
-    /* ============================
-       3️⃣ RESPONSE OK
-       ============================ */
+    /* ===========================
+       CASO B — FALLBACK ROBUSTO
+       =========================== */
+    const { data: fallback } = await supabase
+      .from('poesie')
+      .select('id, title, author_name')
+      .neq('id', poesia_id)
+      .not('poetic_embedding_vec', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(5);
+
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({
-        matches: Array.isArray(matches) ? matches : []
-      })
+      body: JSON.stringify({ matches: fallback || [] })
     };
 
   } catch (err: any) {
-    console.error('[MATCH POESIE UNEXPECTED ERROR]', err);
+    console.error('[MATCH POESIE FATAL]', err);
 
-    // ❗ FAIL-SAFE ASSOLUTO
     return {
-      statusCode: 200,
+      statusCode: 200, // ⚠️ volutamente 200 → il frontend non deve rompersi
       headers: corsHeaders,
       body: JSON.stringify({ matches: [] })
     };
